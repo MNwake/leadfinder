@@ -1,0 +1,23 @@
+[project]
+name = "leadfinder"
+version = "1.0.0"
+description = "LeadFinder backend — CLI lead discovery and FastAPI service"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "beautifulsoup4",
+    "pandas",
+    "requests",
+    "fastapi",
+    "uvicorn[standard]",
+    "pymongo",
+    "python-dotenv",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
