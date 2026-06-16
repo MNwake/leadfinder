@@ -29,7 +29,7 @@ from .services.lead_scoring import LeadScorer
 PRIORITY_ORDER = {"High": 0, "Medium": 1, "Low": 2, "Unscored": 3}
 
 DEFAULT_HOST = "0.0.0.0"
-DEFAULT_PORT = 8000
+DEFAULT_PORT = 8010
 
 
 def load_environment() -> None:

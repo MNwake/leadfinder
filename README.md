@@ -73,7 +73,7 @@ python -m app.main scrape --keyword roofing --city Lakeland --state FL --limit 2
 
 ## FastAPI Server
 
-Start the API server (defaults: host `0.0.0.0`, port `8000`, reload on):
+Start the API server (defaults: host `0.0.0.0`, port `8010`, reload on):
 
 ```bash
 cd leadfinder
@@ -88,7 +88,7 @@ Optional flags:
 python -m app.main serve --host 127.0.0.1 --port 9000 --no-reload
 ```
 
-Interactive docs: [http://localhost:8000/docs](http://localhost:8000/docs)
+Interactive docs: [http://localhost:8010/docs](http://localhost:8010/docs)
 
 ### API Endpoints
 
@@ -113,12 +113,12 @@ Example:
 
 ```bash
 # Queue a sample search
-curl -s -X POST http://localhost:8000/api/v1/searches \
+curl -s -X POST http://localhost:8010/api/v1/searches \
   -H "Content-Type: application/json" \
   -d '{"keyword":"roofing","city":"Lakeland","state":"FL","limit":20,"use_sample_data":true}'
 
 # Poll status
-curl -s http://localhost:8000/api/v1/searches/{search_id}
+curl -s http://localhost:8010/api/v1/searches/{search_id}
 ```
 
 ### Pagination

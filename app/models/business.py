@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -36,6 +37,27 @@ OUTREACH_STATUSES = (
 CONTACT_OUTREACH_ACTIONS = {"Called", "Emailed", "Meeting", "Text", "Voicemail"}
 
 
+def compute_outreach_action_id(lead_id: str, index: int, item: dict[str, Any]) -> str:
+    """Compute a stable UUID string for legacy outreach_history items.
+
+    Older documents may not have `action_id` stored. We derive one deterministically so
+    the API can address/edit/delete outreach actions by a stable identifier.
+    """
+
+    action_type = str(item.get("action_type", "Other"))
+    occurred_at = item.get("occurred_at")
+    if isinstance(occurred_at, datetime):
+        if occurred_at.tzinfo is None:
+            occurred_at = occurred_at.replace(tzinfo=timezone.utc)
+        occurred_at_utc = occurred_at.astimezone(timezone.utc)
+        occurred_at_str = occurred_at_utc.isoformat()
+    else:
+        occurred_at_str = str(occurred_at) if occurred_at is not None else ""
+
+    seed = f"{lead_id}|{index}|{action_type}|{occurred_at_str}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+
+
 @dataclass(slots=True)
 class OutreachAction:
     """A single logged outreach touchpoint."""
@@ -43,20 +65,34 @@ class OutreachAction:
     action_type: str
     notes: str = ""
     occurred_at: datetime | None = None
+    action_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        document: dict[str, Any] = {
             "action_type": self.action_type,
             "notes": self.notes,
             "occurred_at": self.occurred_at or utc_now(),
         }
+        if self.action_id:
+            document["action_id"] = self.action_id
+        return document
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "OutreachAction":
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        lead_id: str | None = None,
+        index: int = 0,
+    ) -> "OutreachAction":
+        action_id = data.get("action_id")
+        if not action_id and lead_id:
+            action_id = compute_outreach_action_id(lead_id=lead_id, index=index, item=data)
         return cls(
             action_type=data.get("action_type", "Other"),
             notes=data.get("notes", ""),
             occurred_at=data.get("occurred_at"),
+            action_id=action_id,
         )
 
 
@@ -232,10 +268,11 @@ class Business:
 
     @classmethod
     def from_mongo_document(cls, document: dict[str, Any]) -> "Business":
+        lead_id = str(document.get("_id")) if document.get("_id") else None
         analysis = WebsiteAnalysis.from_dict(document.get("website_analysis"))
         search_id_value = document.get("search_id")
         return cls(
-            lead_id=str(document.get("_id")) if document.get("_id") else None,
+            lead_id=lead_id,
             search_id=str(search_id_value) if search_id_value else None,
             name=document.get("business_name", ""),
             phone=document.get("phone"),
@@ -259,7 +296,8 @@ class Business:
             next_action=document.get("next_action"),
             follow_up_date=document.get("follow_up_date"),
             outreach_history=[
-                OutreachAction.from_dict(item) for item in document.get("outreach_history", [])
+                OutreachAction.from_dict(item, lead_id=lead_id, index=index)
+                for index, item in enumerate(document.get("outreach_history", []))
             ],
             archived=bool(document.get("archived", False)),
             archived_at=document.get("archived_at"),

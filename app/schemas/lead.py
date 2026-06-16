@@ -29,9 +29,23 @@ class WebsiteAnalysisResponse(BaseModel):
 
 
 class OutreachActionResponse(BaseModel):
+    action_id: str | None = None
     action_type: str
     notes: str = ""
     occurred_at: str | None = None
+
+
+class OutreachActionCreateRequest(BaseModel):
+    action_type: str
+    notes: str = ""
+    occurred_at: datetime | None = None
+    action_id: str | None = None
+
+
+class OutreachActionUpdateRequest(BaseModel):
+    action_type: str | None = None
+    notes: str | None = None
+    occurred_at: datetime | None = None
 
 
 class LeadResponse(BaseModel):
@@ -97,6 +111,7 @@ def _website_analysis_to_response(analysis: WebsiteAnalysis | None) -> WebsiteAn
 
 def _outreach_action_to_response(action: OutreachAction) -> OutreachActionResponse:
     return OutreachActionResponse(
+        action_id=action.action_id,
         action_type=action.action_type,
         notes=action.notes,
         occurred_at=format_datetime(action.occurred_at),

@@ -33,6 +33,9 @@ class SearchResponse(BaseModel):
 
 
 def search_to_response(search: Search) -> SearchResponse:
+    completed = format_datetime(search.completed_at)
+    created = format_datetime(search.created_at) or completed
+    updated = format_datetime(search.updated_at) or completed or created
     return SearchResponse(
         id=search.search_id or "",
         status=search.status,
@@ -43,8 +46,8 @@ def search_to_response(search: Search) -> SearchResponse:
         use_sample_data=search.use_sample_data,
         result_count=search.result_count,
         error_message=search.error_message,
-        created_at=format_datetime(search.created_at) or "",
+        created_at=created or "",
         started_at=format_datetime(search.started_at),
-        completed_at=format_datetime(search.completed_at),
-        updated_at=format_datetime(search.updated_at) or "",
+        completed_at=completed,
+        updated_at=updated or "",
     )

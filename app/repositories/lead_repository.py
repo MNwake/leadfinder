@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,7 +12,15 @@ from pymongo import ASCENDING, DESCENDING, ReturnDocument
 from pymongo.collection import Collection
 from pymongo.database import Database
 
-from ..models.business import OUTREACH_STATUSES, Business, utc_now
+from ..models.business import (
+    CONTACT_OUTREACH_ACTIONS,
+    OUTREACH_ACTION_TYPES,
+    OUTREACH_STATUSES,
+    compute_outreach_action_id,
+    Business,
+    OutreachAction,
+    utc_now,
+)
 
 
 COLLECTION_NAME = "business_leads"
@@ -186,6 +195,101 @@ class LeadRepository:
             return_document=ReturnDocument.AFTER,
         )
         return Business.from_mongo_document(updated) if updated else None
+
+    def add_outreach_action(self, lead_id: str, action: OutreachAction) -> Business | None:
+        self.ensure_indexes()
+        if not ObjectId.is_valid(lead_id):
+            return None
+        if action.action_type not in OUTREACH_ACTION_TYPES:
+            return None
+
+        if not action.action_id:
+            action.action_id = str(uuid.uuid4())
+
+        action_document = action.to_dict()
+        updates: dict[str, Any] = {"updated_at": utc_now()}
+        if action.action_type in CONTACT_OUTREACH_ACTIONS:
+            updates["contacted"] = True
+            updates["outreach_status"] = "Contacted"
+        elif action.action_type == "Follow-Up Scheduled":
+            updates["outreach_status"] = "Follow-Up Scheduled"
+
+        updated = self.collection.find_one_and_update(
+            {"_id": ObjectId(lead_id)},
+            {
+                "$push": {"outreach_history": action_document},
+                "$set": updates,
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        return Business.from_mongo_document(updated) if updated else None
+
+    def update_outreach_action(
+        self,
+        lead_id: str,
+        action_id: str,
+        action: OutreachAction,
+    ) -> Business | None:
+        self.ensure_indexes()
+        if not ObjectId.is_valid(lead_id) or action.action_type not in OUTREACH_ACTION_TYPES:
+            return None
+
+        document = self.collection.find_one({"_id": ObjectId(lead_id)})
+        if not document:
+            return None
+
+        history = list(document.get("outreach_history", []))
+        index = self._find_outreach_action_index(lead_id, history, action_id)
+        if index is None:
+            return None
+
+        action.action_id = action_id
+        history[index] = action.to_dict()
+
+        updated = self.collection.find_one_and_update(
+            {"_id": ObjectId(lead_id)},
+            {"$set": {"outreach_history": history, "updated_at": utc_now()}},
+            return_document=ReturnDocument.AFTER,
+        )
+        return Business.from_mongo_document(updated) if updated else None
+
+    def delete_outreach_action(self, lead_id: str, action_id: str) -> Business | None:
+        self.ensure_indexes()
+        if not ObjectId.is_valid(lead_id):
+            return None
+
+        document = self.collection.find_one({"_id": ObjectId(lead_id)})
+        if not document:
+            return None
+
+        history = list(document.get("outreach_history", []))
+        index = self._find_outreach_action_index(lead_id, history, action_id)
+        if index is None:
+            return None
+
+        history.pop(index)
+        updated = self.collection.find_one_and_update(
+            {"_id": ObjectId(lead_id)},
+            {"$set": {"outreach_history": history, "updated_at": utc_now()}},
+            return_document=ReturnDocument.AFTER,
+        )
+        return Business.from_mongo_document(updated) if updated else None
+
+    def _find_outreach_action_index(
+        self,
+        lead_id: str,
+        history: list[dict[str, Any]],
+        action_id: str,
+    ) -> int | None:
+        for index, item in enumerate(history):
+            stored_id = item.get("action_id") or compute_outreach_action_id(
+                lead_id=lead_id,
+                index=index,
+                item=item,
+            )
+            if stored_id == action_id:
+                return index
+        return None
 
     def _build_query(self, filters: LeadFilters) -> dict[str, Any]:
         query: dict[str, Any] = {}

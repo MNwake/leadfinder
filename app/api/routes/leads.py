@@ -8,7 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...repositories.lead_repository import LeadFilters
 from ...schemas.common import PaginatedResponse
-from ...schemas.lead import LeadResponse, LeadUpdateRequest, business_to_response
+from ...schemas.lead import (
+    LeadResponse,
+    LeadUpdateRequest,
+    OutreachActionCreateRequest,
+    OutreachActionUpdateRequest,
+    business_to_response,
+)
 from ...services.lead_service import LeadService
 from ..deps import get_lead_service
 
@@ -83,4 +89,56 @@ def update_lead(
     lead = service.update_lead(lead_id, payload)
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
+    return business_to_response(lead)
+
+
+@router.post("/{lead_id}/outreach-actions", response_model=LeadResponse)
+def add_outreach_action(
+    lead_id: str,
+    payload: OutreachActionCreateRequest,
+    service: Annotated[LeadService, Depends(get_lead_service)],
+) -> LeadResponse:
+    lead = service.add_outreach_action(
+        lead_id=lead_id,
+        action_type=payload.action_type,
+        notes=payload.notes,
+        occurred_at=payload.occurred_at,
+        action_id=payload.action_id,
+    )
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return business_to_response(lead)
+
+
+@router.patch("/{lead_id}/outreach-actions/{action_id}", response_model=LeadResponse)
+def update_outreach_action(
+    lead_id: str,
+    action_id: str,
+    payload: OutreachActionUpdateRequest,
+    service: Annotated[LeadService, Depends(get_lead_service)],
+) -> LeadResponse:
+    if not payload.model_fields_set:
+        raise HTTPException(status_code=400, detail="No fields provided for update")
+
+    lead = service.update_outreach_action(
+        lead_id=lead_id,
+        action_id=action_id,
+        action_type=payload.action_type,
+        notes=payload.notes,
+        occurred_at=payload.occurred_at,
+    )
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead or outreach action not found")
+    return business_to_response(lead)
+
+
+@router.delete("/{lead_id}/outreach-actions/{action_id}", response_model=LeadResponse)
+def delete_outreach_action(
+    lead_id: str,
+    action_id: str,
+    service: Annotated[LeadService, Depends(get_lead_service)],
+) -> LeadResponse:
+    lead = service.delete_outreach_action(lead_id=lead_id, action_id=action_id)
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead or outreach action not found")
     return business_to_response(lead)
