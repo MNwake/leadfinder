@@ -184,8 +184,16 @@ class LeadRepository:
         elif updates.get("archived") is False:
             updates["archived_at"] = None
 
-        if updates.get("outreach_status") == "Contacted":
-            updates["contacted"] = True
+        if "outreach_status" in updates and "contacted" not in updates:
+            document = self.collection.find_one({"_id": ObjectId(lead_id)})
+            if document:
+                history = list(document.get("outreach_history", []))
+                has_contact = any(
+                    item.get("action_type") in CONTACT_OUTREACH_ACTIONS for item in history
+                )
+                updates["contacted"] = has_contact
+                if updates["outreach_status"] == "Contacted" and not has_contact:
+                    updates["outreach_status"] = "New"
 
         updates["updated_at"] = utc_now()
 
@@ -246,9 +254,20 @@ class LeadRepository:
         action.action_id = action_id
         history[index] = action.to_dict()
 
+        updates: dict[str, Any] = {
+            "outreach_history": history,
+            "updated_at": utc_now(),
+        }
+        updates.update(
+            self._contact_flags_from_history(
+                history,
+                document.get("outreach_status"),
+            )
+        )
+
         updated = self.collection.find_one_and_update(
             {"_id": ObjectId(lead_id)},
-            {"$set": {"outreach_history": history, "updated_at": utc_now()}},
+            {"$set": updates},
             return_document=ReturnDocument.AFTER,
         )
         return Business.from_mongo_document(updated) if updated else None
@@ -268,12 +287,36 @@ class LeadRepository:
             return None
 
         history.pop(index)
+        updates: dict[str, Any] = {
+            "outreach_history": history,
+            "updated_at": utc_now(),
+        }
+        updates.update(
+            self._contact_flags_from_history(
+                history,
+                document.get("outreach_status"),
+            )
+        )
+
         updated = self.collection.find_one_and_update(
             {"_id": ObjectId(lead_id)},
-            {"$set": {"outreach_history": history, "updated_at": utc_now()}},
+            {"$set": updates},
             return_document=ReturnDocument.AFTER,
         )
         return Business.from_mongo_document(updated) if updated else None
+
+    def _contact_flags_from_history(
+        self,
+        history: list[dict[str, Any]],
+        current_status: str | None,
+    ) -> dict[str, Any]:
+        has_contact = any(
+            item.get("action_type") in CONTACT_OUTREACH_ACTIONS for item in history
+        )
+        updates: dict[str, Any] = {"contacted": has_contact}
+        if not has_contact and current_status == "Contacted":
+            updates["outreach_status"] = "New"
+        return updates
 
     def _find_outreach_action_index(
         self,
