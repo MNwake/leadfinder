@@ -109,15 +109,21 @@ class SearchRepository:
         now = utc_now()
         return self.update_status(search_id, "running", started_at=now)
 
-    def mark_completed(self, search_id: str, result_count: int) -> Search | None:
+    def mark_completed(
+        self,
+        search_id: str,
+        result_count: int,
+        error_message: str | None = None,
+    ) -> Search | None:
         now = utc_now()
-        return self.update_status(
-            search_id,
-            "completed",
-            result_count=result_count,
-            completed_at=now,
-            searched_at=now,
-        )
+        fields: dict[str, Any] = {
+            "result_count": result_count,
+            "completed_at": now,
+            "searched_at": now,
+        }
+        if error_message:
+            fields["error_message"] = error_message
+        return self.update_status(search_id, "completed", **fields)
 
     def mark_failed(self, search_id: str, error_message: str) -> Search | None:
         now = utc_now()

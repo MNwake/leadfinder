@@ -12,7 +12,7 @@ class SearchCreateRequest(BaseModel):
     keyword: str
     city: str
     state: str
-    limit: int = Field(default=20, ge=1, le=100)
+    limit: int = Field(default=60, ge=1, le=100)
     use_sample_data: bool = False
 
 

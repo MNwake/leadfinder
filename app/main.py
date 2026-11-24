@@ -22,7 +22,13 @@ from dotenv import load_dotenv
 
 from .exports.csv_export import CSVExporter
 from .models.business import Business
-from .scraper.business_scraper import BusinessScraper, GooglePlacesConfigurationError
+from .database.mongo_client import get_mongo_connection
+from .repositories.places_usage_repository import PlacesUsageRepository
+from .scraper.business_scraper import (
+    BusinessScraper,
+    GooglePlacesConfigurationError,
+    PlacesMonthlyQuotaExceeded,
+)
 from .scraper.website_checker import WebsiteChecker
 from .services.lead_scoring import LeadScorer
 
@@ -72,7 +78,7 @@ def build_scrape_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keyword", required=True, help="Business niche, e.g. roofing")
     parser.add_argument("--city", required=True, help="City to search, e.g. Lakeland")
     parser.add_argument("--state", required=True, help="State abbreviation, e.g. FL")
-    parser.add_argument("--limit", type=int, default=20, help="Maximum businesses to fetch")
+    parser.add_argument("--limit", type=int, default=60, help="Maximum businesses to fetch")
     parser.add_argument("--output", help="CSV output path")
     parser.add_argument(
         "--api-key",
@@ -99,7 +105,10 @@ def run_server(args: argparse.Namespace) -> int:
 
 
 def run_scrape(args: argparse.Namespace) -> int:
-    scraper = BusinessScraper(api_key=args.api_key)
+    usage_gate = None
+    if not args.sample:
+        usage_gate = PlacesUsageRepository(get_mongo_connection().database)
+    scraper = BusinessScraper(api_key=args.api_key, usage_gate=usage_gate)
     businesses = _discover_businesses(scraper=scraper, args=args)
 
     checker = WebsiteChecker()
@@ -124,6 +133,8 @@ def run_scrape(args: argparse.Namespace) -> int:
     )
 
     print(f"Exported {len(scored_businesses)} leads to {output_path}")
+    if scraper.quota_notice:
+        print(scraper.quota_notice)
     _print_summary(scored_businesses)
     return 0
 
@@ -174,7 +185,7 @@ def _discover_businesses(scraper: BusinessScraper, args: argparse.Namespace) -> 
             state=args.state,
             limit=args.limit,
         )
-    except GooglePlacesConfigurationError as exc:
+    except (GooglePlacesConfigurationError, PlacesMonthlyQuotaExceeded) as exc:
         raise SystemExit(str(exc)) from exc
 
 

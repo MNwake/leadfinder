@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from ..models.business import Business
 from ..models.search import Search, SearchStatus
 from ..repositories.lead_repository import LeadRepository
+from ..repositories.places_usage_repository import PlacesUsageRepository
 from ..repositories.search_repository import SearchRepository
 from ..scraper.business_scraper import BusinessScraper, GooglePlacesConfigurationError
 from ..scraper.website_checker import WebsiteChecker
@@ -26,7 +27,7 @@ class SearchCreateParams:
     keyword: str
     city: str
     state: str
-    limit: int = 20
+    limit: int = 60
     use_sample_data: bool = False
 
 
@@ -40,10 +41,14 @@ class SearchService:
         scraper: BusinessScraper | None = None,
         website_checker: WebsiteChecker | None = None,
         scorer: LeadScorer | None = None,
+        usage_repository: PlacesUsageRepository | None = None,
     ) -> None:
         self.search_repository = search_repository
         self.lead_repository = lead_repository
-        self.scraper = scraper or BusinessScraper()
+        self.usage_repository = usage_repository or PlacesUsageRepository(
+            search_repository.collection.database
+        )
+        self.scraper = scraper or BusinessScraper(usage_gate=self.usage_repository)
         self.website_checker = website_checker or WebsiteChecker()
         self.scorer = scorer or LeadScorer()
 
@@ -88,7 +93,12 @@ class SearchService:
             businesses = self.discover_leads(search)
             scored = self.analyze_and_score(businesses, search)
             result_count = self.persist_leads(search_id, scored)
-            self.update_search_status(search_id, "completed", result_count=result_count)
+            self.update_search_status(
+                search_id,
+                "completed",
+                result_count=result_count,
+                error_message=getattr(self.scraper, "quota_notice", None),
+            )
         except Exception as exc:
             self.update_search_status(search_id, "failed", error_message=str(exc))
 
@@ -98,6 +108,8 @@ class SearchService:
         state = search.state.strip().upper()
 
         if search.use_sample_data:
+            if hasattr(self.scraper, "quota_notice"):
+                self.scraper.quota_notice = None
             return self.scraper.sample_businesses(keyword=keyword, city=city, state=state)
 
         try:
@@ -135,7 +147,11 @@ class SearchService:
         if status == "running":
             return self.search_repository.mark_started(search_id)
         if status == "completed" and result_count is not None:
-            return self.search_repository.mark_completed(search_id, result_count)
+            return self.search_repository.mark_completed(
+                search_id,
+                result_count,
+                error_message=error_message,
+            )
         if status == "failed" and error_message is not None:
             return self.search_repository.mark_failed(search_id, error_message)
         return self.search_repository.update_status(search_id, status)

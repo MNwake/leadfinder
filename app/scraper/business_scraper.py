@@ -1,14 +1,13 @@
 """Google-based business discovery for LeadFinder.
 
-The MVP uses the Google Places API because it returns structured local business
-data without depending on brittle Google Maps HTML scraping.
+Searches use Places API (New) Text Search. Each returned page counts toward the
+monthly request cap when a usage gate is attached.
 """
 
 from __future__ import annotations
 
 import os
-import time
-from typing import Any
+from typing import Any, Protocol
 
 import requests
 
@@ -19,21 +18,41 @@ class GooglePlacesConfigurationError(RuntimeError):
     """Raised when Google discovery is requested without an API key."""
 
 
+class PlacesMonthlyQuotaExceeded(RuntimeError):
+    """Raised when the monthly Places page-request cap is already used up."""
+
+
+class PlacesUsageGate(Protocol):
+    """Reserves one counted page request before Google is called."""
+
+    monthly_limit: int
+
+    def try_reserve_page(self) -> bool:
+        """Claim one page request for the current month."""
+
+    def release_page(self) -> None:
+        """Return a claim when Google did not return a page."""
+
+    def current_month_key(self) -> str:
+        """Return the month key the counter resets on, such as ``2026-11``."""
+
+
 class BusinessScraper:
     """Discover local businesses by keyword and location."""
 
-    TEXT_SEARCH_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
-    DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
-
-    DETAIL_FIELDS = ",".join(
+    TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+    PAGE_SIZE = 20
+    FIELD_MASK = ",".join(
         [
-            "place_id",
-            "name",
-            "formatted_phone_number",
-            "formatted_address",
-            "website",
-            "url",
-            "business_status",
+            "places.id",
+            "places.displayName",
+            "places.formattedAddress",
+            "places.nationalPhoneNumber",
+            "places.internationalPhoneNumber",
+            "places.websiteUri",
+            "places.googleMapsUri",
+            "places.businessStatus",
+            "nextPageToken",
         ]
     )
 
@@ -42,14 +61,18 @@ class BusinessScraper:
         api_key: str | None = None,
         session: requests.Session | None = None,
         request_timeout: int = 15,
+        usage_gate: PlacesUsageGate | None = None,
     ) -> None:
         self.api_key = api_key or os.getenv("GOOGLE_PLACES_API_KEY")
         self.session = session or requests.Session()
         self.request_timeout = request_timeout
+        self.usage_gate = usage_gate
+        self.quota_notice: str | None = None
 
-    def search(self, keyword: str, city: str, state: str, limit: int = 20) -> list[Business]:
-        """Search Google Places and return normalized business records."""
+    def search(self, keyword: str, city: str, state: str, limit: int = 60) -> list[Business]:
+        """Search Places API (New) and return normalized business records."""
 
+        self.quota_notice = None
         if not self.api_key:
             raise GooglePlacesConfigurationError(
                 "Google Places API key missing. Set GOOGLE_PLACES_API_KEY or use --sample."
@@ -62,13 +85,12 @@ class BusinessScraper:
         seen_place_ids: set[str] = set()
 
         for place in places:
-            place_id = place.get("place_id")
+            place_id = place.get("id")
             if not place_id or place_id in seen_place_ids:
                 continue
 
             seen_place_ids.add(place_id)
-            details = self._place_details(place_id=place_id)
-            businesses.append(self._business_from_place(details or place))
+            businesses.append(self._business_from_place(place))
 
         return businesses
 
@@ -107,72 +129,123 @@ class BusinessScraper:
         ]
 
     def _text_search(self, query: str, limit: int) -> list[dict[str, Any]]:
-        """Run Google Places Text Search, following pagination up to the limit."""
+        """Fetch Text Search pages until the limit, the last page, or the monthly cap."""
 
         results: list[dict[str, Any]] = []
-        params: dict[str, Any] = {"query": query, "key": self.api_key}
+        page_token: str | None = None
+        seen_tokens: set[str] = set()
+        target = max(limit, 0)
 
-        while len(results) < limit:
-            payload = self._get_json(self.TEXT_SEARCH_URL, params=params)
-            status = payload.get("status")
-
-            if status not in {"OK", "ZERO_RESULTS"}:
-                raise RuntimeError(
-                    f"Google Places text search failed with status {status}: "
-                    f"{payload.get('error_message', 'no error message')}"
-                )
-
-            results.extend(payload.get("results", []))
-
-            next_page_token = payload.get("next_page_token")
-            if not next_page_token or len(results) >= limit:
+        while len(results) < target:
+            page_size = min(self.PAGE_SIZE, target - len(results))
+            if not self._reserve_page(collected=len(results)):
                 break
 
-            # Google requires a short delay before next_page_token becomes valid.
-            time.sleep(2)
-            params = {"pagetoken": next_page_token, "key": self.api_key}
+            try:
+                payload = self._text_search_page(
+                    query=query,
+                    page_size=page_size,
+                    page_token=page_token,
+                )
+            except Exception:
+                self._release_page()
+                raise
 
-        return results[:limit]
+            page = payload.get("places") or []
+            results.extend(page)
 
-    def _place_details(self, place_id: str) -> dict[str, Any] | None:
-        """Fetch detail fields that are often absent from text search results."""
+            next_page_token = payload.get("nextPageToken")
+            if not page or not next_page_token or next_page_token in seen_tokens:
+                break
 
-        payload = self._get_json(
-            self.DETAILS_URL,
-            params={"place_id": place_id, "fields": self.DETAIL_FIELDS, "key": self.api_key},
+            seen_tokens.add(next_page_token)
+            page_token = next_page_token
+
+        return results[:target]
+
+    def _reserve_page(self, collected: int) -> bool:
+        """Claim the next page, or stop when the monthly cap is exhausted."""
+
+        gate = self.usage_gate
+        if gate is None:
+            return True
+
+        if gate.try_reserve_page():
+            return True
+
+        if collected:
+            self.quota_notice = (
+                f"Monthly Places API limit reached ({gate.monthly_limit} page requests "
+                f"for {gate.current_month_key()}). Returned the places already fetched. "
+                "Usage resets at the start of next month (UTC)."
+            )
+            return False
+
+        raise PlacesMonthlyQuotaExceeded(
+            f"Places API monthly limit of {gate.monthly_limit} page requests was reached "
+            f"for {gate.current_month_key()}. Usage resets at the start of next month (UTC)."
         )
-        status = payload.get("status")
 
-        if status == "OK":
-            return payload.get("result", {})
+    def _release_page(self) -> None:
+        if self.usage_gate is not None:
+            self.usage_gate.release_page()
 
-        if status == "NOT_FOUND":
-            return None
+    def _text_search_page(
+        self,
+        query: str,
+        page_size: int,
+        page_token: str | None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"textQuery": query, "pageSize": page_size}
+        if page_token:
+            body["pageToken"] = page_token
 
-        raise RuntimeError(
-            f"Google Places details failed for {place_id} with status {status}: "
-            f"{payload.get('error_message', 'no error message')}"
+        response = self.session.post(
+            self.TEXT_SEARCH_URL,
+            json=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": self.api_key or "",
+                "X-Goog-FieldMask": self.FIELD_MASK,
+            },
+            timeout=self.request_timeout,
         )
 
-    def _get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
-        response = self.session.get(url, params=params, timeout=self.request_timeout)
-        response.raise_for_status()
-        return response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Places API text search returned a non-JSON response (HTTP {response.status_code})"
+            ) from exc
+
+        if not isinstance(payload, dict):
+            raise RuntimeError("Places API text search returned an unexpected payload")
+
+        if response.status_code >= 400 or payload.get("error"):
+            error = payload.get("error") or {}
+            message = error.get("message") or "no error message"
+            status = error.get("status", response.status_code)
+            raise RuntimeError(f"Places API text search failed with status {status}: {message}")
+
+        return payload
 
     def _business_from_place(self, place: dict[str, Any]) -> Business:
-        business_status = place.get("business_status")
+        business_status = place.get("businessStatus")
         notes = []
         if business_status and business_status != "OPERATIONAL":
             notes.append(f"Google business status: {business_status}")
 
+        display_name = place.get("displayName") or {}
+        business_name = display_name.get("text") if isinstance(display_name, dict) else display_name
+
         return Business(
-            name=place.get("name", "Unknown Business"),
-            phone=place.get("formatted_phone_number"),
-            address=place.get("formatted_address"),
-            website_url=place.get("website"),
-            google_maps_url=place.get("url"),
+            name=business_name or "Unknown Business",
+            phone=place.get("nationalPhoneNumber") or place.get("internationalPhoneNumber"),
+            address=place.get("formattedAddress"),
+            website_url=place.get("websiteUri"),
+            google_maps_url=place.get("googleMapsUri"),
             source="google_places",
-            source_id=place.get("place_id"),
+            source_id=place.get("id"),
             raw_data=place,
             notes=notes,
         )
