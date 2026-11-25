@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ..database.mongo_client import get_mongo_connection, reset_mongo_connection
-from .routes import health, leads, searches
+from .routes import health, leads, searches, usage
 
 API_PREFIX = "/api/v1"
 
@@ -48,6 +48,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router, prefix=API_PREFIX)
     app.include_router(leads.router, prefix=API_PREFIX)
     app.include_router(searches.router, prefix=API_PREFIX)
+    app.include_router(usage.router, prefix=API_PREFIX)
 
     return app
 
